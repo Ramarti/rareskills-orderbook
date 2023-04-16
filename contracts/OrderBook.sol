@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "hardhat/console.sol";
 
 contract OrderBookExecutor is EIP712, AccessControl {
 
@@ -17,11 +18,11 @@ contract OrderBookExecutor is EIP712, AccessControl {
         uint256 amount1; 
         address token2;
         uint256 amount2;
-        uint64 expiraton;
+        uint64 expiration;
     }
 
     bytes32 private constant _ORDER_TYPEHASH =
-        keccak256("Order(address from,address token1,uint256 amount1,address token2,address amount2,uint64 expiration)");
+        keccak256("Order(address from,address token1,uint256 amount1,address token2,uint256 amount2,uint64 expiration)");
     bytes32 public constant RELAYER_ROLE = keccak256("RELAYER_ROLE");
     uint256 public constant MAX_TOKENS = 2;
     uint256 public constant MAX_TTL = 30 days;
@@ -48,7 +49,7 @@ contract OrderBookExecutor is EIP712, AccessControl {
         // Example matching orders
         // buy 100 token1 for 50 token2
         // sell 100 token1 for 50 token2
-        require(block.timestamp <= _buy.expiraton && block.timestamp <= _sell.expiraton, "Expired Order");
+        require(block.timestamp <= _buy.expiration && block.timestamp <= _sell.expiration, "Expired Order");
         require(_buy.token1 != _buy.token2, "Cannot trade same token");
         require(_buy.token1 == _sell.token1 && _buy.token2 == _sell.token2, "Tokens do not match");
         require(tokens[_buy.token1] && tokens[_buy.token2], "Unsupported token");
@@ -62,15 +63,16 @@ contract OrderBookExecutor is EIP712, AccessControl {
             _isOrderSigValid(_sell, _sellSig),
             "Sell signature does not match"
         );
-        ERC20(_buy.token1).safeTransferFrom(_buy.from, _sell.from, _buy.amount1);
-        ERC20(_buy.token2).safeTransferFrom(_sell.from, _buy.from, _buy.amount2);
-
+        ERC20(_buy.token2).safeTransferFrom(_buy.from, address(this), _buy.amount2);
+        ERC20(_buy.token1).safeTransferFrom(_sell.from, address(this), _buy.amount1);
+        ERC20(_buy.token2).safeTransfer(_sell.from, _buy.amount2);
+        ERC20(_buy.token1).safeTransfer(_buy.from, _buy.amount1);
     }
 
     function _isOrderSigValid(Order calldata _order, bytes calldata _signature) private view returns (bool) {
         return SignatureChecker.isValidSignatureNow(
                 _order.from,
-                _hashTypedDataV4(keccak256(abi.encode(_ORDER_TYPEHASH, _order.from, _order.token1, _order.amount1, _order.token2, _order.amount2, _order.expiraton))),
+                _hashTypedDataV4(keccak256(abi.encode(_ORDER_TYPEHASH, _order.from, _order.token1, _order.amount1, _order.token2, _order.amount2, _order.expiration))),
                 _signature
         );
     }

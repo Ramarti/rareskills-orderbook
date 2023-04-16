@@ -1,6 +1,38 @@
 const { expect } = require("chai")
 const hre = require("hardhat")
 const { ethers } = hre
+const { time } = require("@nomicfoundation/hardhat-network-helpers");
+
+async function sendPermit(chainId, token, signer, spender, amount, nonce, deadline) {
+
+  const domain = {
+    name: await token.name(),
+    version: "1",
+    chainId: chainId,
+    verifyingContract: token.address,
+  }
+  const types = {
+    Permit: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+    ],
+  }
+  const permit = {
+    owner: signer.address,
+    spender: spender,
+    value: amount,
+    nonce: nonce,
+    deadline: deadline,
+  }
+  const sig = await signer._signTypedData(domain, types, permit);
+  const { r, s, v } = ethers.utils.splitSignature(sig);
+
+  return token.permit(signer.address, spender, amount, deadline, v, r, s);
+
+}
 
 describe("OrderBookExecutor", function () {
   let OrderBookExecutor,
@@ -14,9 +46,14 @@ describe("OrderBookExecutor", function () {
   beforeEach(async function () {
     ;[owner, relayer, buyer, seller, _] = await ethers.getSigners()
 
-    const ERC20 = await ethers.getContractFactory("ERC20")
-    token1 = await ERC20.deploy("Token1", "TK1")
-    token2 = await ERC20.deploy("Token2", "TK2")
+    const Token = await ethers.getContractFactory("Token")
+    token1 = await Token.deploy("Token1", "TK1")
+    await token1.mint(buyer.address, 1000)
+    await token1.mint(seller.address, 1000)
+
+    token2 = await Token.deploy("Token2", "TK2")
+    await token2.mint(buyer.address, 1000)
+    await token2.mint(seller.address, 1000)
 
     OrderBookExecutor = await ethers.getContractFactory("OrderBookExecutor")
     orderBookExecutor = await OrderBookExecutor.deploy(relayer.address, [
@@ -36,25 +73,27 @@ describe("OrderBookExecutor", function () {
   })
 
   it("Should allow executing matching orders", async function () {
+    const latest = await time.latest()
+    // Wants to buy 100 token1 for 50 token2
     const buyOrder = {
       from: buyer.address,
       token1: token1.address,
       amount1: '100',
       token2: token2.address,
       amount2: '50',
-      expiraton: `${Math.floor(Date.now() / 1000) + 60}`,
-    }
-    console.dir(buyOrder)
+      expiration: `${latest + 1000}`
 
+    }
+    // Wants to sell 100 token1 for 50 token2
     const sellOrder = {
       from: seller.address,
       token1: token1.address,
       amount1: '100',
       token2: token2.address,
       amount2: '50',
-      expiraton: `${Math.floor(Date.now() / 1000) + 60}`,
+      expiration: `${latest + 1000}`
     }
-    console.dir(sellOrder)
+
     const domain = {
       name: "OrderBookExecutor",
       version: "1",
@@ -71,25 +110,18 @@ describe("OrderBookExecutor", function () {
         { name: "amount2", type: "uint256" },
         { name: "expiration", type: "uint64" },
       ],
-    }
-    
-    const buySig = await buyer._signTypedData(domain, types, buyOrder) 
+    };
+    const buySig = await buyer._signTypedData(domain, types, buyOrder)
     const sellSig = await seller._signTypedData(domain, types, sellOrder)
-    return
-    await token1
-      .connect(relayer)
-      .approve(orderBookExecutor.address, buyOrder.amount1)
-    await token2
-      .connect(relayer)
-      .approve(orderBookExecutor.address, sellOrder.amount1)
-    // const buyerBalancesBefore = [await token1.balanceOf(buyer.address), await token2.balanceOf(buyer.address)]
-    //const sellerBalancesBefore = [await token1.balanceOf(seller.address), await token2.balanceOf(seller.address)]
 
-    await expect(
-      orderBookExecutor
-        .connect(relayer)
-        .executeOrders(buyOrder, buySig, sellOrder, sellSig)
-    ).to.emit(token1, "Transfer")
+    await sendPermit(domain.chainId, token2, buyer, orderBookExecutor.address, buyOrder.amount2, 0, buyOrder.expiration)
+    await sendPermit(domain.chainId, token1, seller, orderBookExecutor.address, buyOrder.amount1, 0, sellOrder.expiration)
+
+    const buyerBalancesBefore = [await token1.balanceOf(buyer.address), await token2.balanceOf(buyer.address)]
+    const sellerBalancesBefore = [await token1.balanceOf(seller.address), await token2.balanceOf(seller.address)]
+    await orderBookExecutor
+      .connect(relayer)
+      .executeOrders(buyOrder, buySig, sellOrder, sellSig)
 
     const buyerBalancesAfter = [await token1.balanceOf(buyer.address), await token2.balanceOf(buyer.address)]
     const sellerBalancesAfter = [await token1.balanceOf(seller.address), await token2.balanceOf(seller.address)]
