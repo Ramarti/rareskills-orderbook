@@ -1,0 +1,10 @@
+node_modules
+.vscode
+artifacts
+build
+cache
+coverage
+coverage.*
+.env
+.abis-no-errors
+yarn-error.log
